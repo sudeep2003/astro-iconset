@@ -177,7 +177,7 @@ export function createPlugin(
   return {
     name: "astro-iconset",
     enforce: "pre",
-    resolveId(id, importer) {
+    async resolveId(id, importer) {
       if (id === virtualModuleId) {
         return resolvedVirtualModuleId;
       }
@@ -188,17 +188,14 @@ export function createPlugin(
       const clean = stripQuery(id);
       if (!clean.endsWith(".svg")) return;
 
-      let abs: string;
-      if (isAbsolute(clean)) {
-        abs = normalize(clean);
-      } else if (importer) {
-        const base = importer.startsWith("file:")
-          ? fileURLToPath(new URL(importer))
-          : importer;
-        abs = normalize(resolve(dirname(base), clean));
-      } else {
+      // Let Vite resolve aliases and absolute/relative paths
+      const resolved = await this.resolve(clean, importer, {
+        skipSelf: true,
+      });
+      if (!resolved) {
         return;
       }
+      const abs = normalize(resolved.id);
 
       const token = Buffer.from(abs, "utf-8").toString("base64url");
       return `\0icon-import:${token}`;
