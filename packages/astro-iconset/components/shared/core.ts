@@ -22,14 +22,26 @@ export interface ResolveIconInput {
 export interface ResolvedIcon {
   attrs: Record<string, string>;
   inner: string;
+  symbolId: string;
+  symbolBody: string;
+  symbolViewBox: string;
   dataAttr?: {
     name: string;
     value: string;
   };
 }
 
-function escapeHtml(s: string): string {
-  return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+export function escapeHtml(s: string): string {
+  return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+}
+
+function importedCacheKey(i: { body?: string; width?: number | string; height?: number | string }): string {
+  let hash = 5381;
+  const raw = `${i.body ?? ""}:${i.width ?? ""}:${i.height ?? ""}`;
+  for (let j = 0; j < raw.length; j++) {
+    hash = ((hash << 5) + hash) + raw.charCodeAt(j);
+  }
+  return `import:${(hash >>> 0).toString(36).padStart(7, "0")}`;
 }
 
 export function resolveIcon(input: ResolveIconInput, framework: string): ResolvedIcon {
@@ -52,11 +64,13 @@ export function resolveIcon(input: ResolveIconInput, framework: string): Resolve
 
   let body: string;
   let attrs: Record<string, string> = {};
+  let symbolId: string;
 
   if (icon) {
     const renderData = iconToSVG(icon);
     body = replaceIDs(renderData.body);
     attrs = { ...(renderData.attributes as Record<string, string>) };
+    symbolId = `icon:${importedCacheKey(icon)}`;
   } else {
     const iconName = name as string;
     const colonIdx = iconName.indexOf(":");
@@ -74,7 +88,10 @@ export function resolveIcon(input: ResolveIconInput, framework: string): Resolve
     const renderData = iconToSVG(iconData);
     body = replaceIDs(renderData.body);
     attrs = { ...(renderData.attributes as Record<string, string>) };
+    symbolId = `icon:${collection.prefix}:${iconKey}`;
   }
+
+  const viewBox = attrs.viewBox ?? "";
 
   if (resolvedWidth != null) attrs.width = String(resolvedWidth);
   if (resolvedHeight != null) attrs.height = String(resolvedHeight);
@@ -94,5 +111,5 @@ export function resolveIcon(input: ResolveIconInput, framework: string): Resolve
           value: dataIconValue,
         };
 
-  return { attrs, inner, dataAttr };
+  return { attrs, inner, symbolId, symbolBody: body, symbolViewBox: viewBox, dataAttr };
 }

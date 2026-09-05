@@ -1,11 +1,10 @@
 ---
 import type { IconifyIcon } from "@iconify/types";
-import { getIconData, iconToSVG } from "@iconify/utils";
 import type { HTMLAttributes } from "astro/types";
-import { createHash } from "node:crypto";
+
+import { resolveIcon } from "./shared/core.js";
 import { cache } from "./cache.js";
-import type { IconifyIconBuildResult } from "@iconify/utils/lib/svg/build.js";
-import type { AstroIconCollectionMap } from "../typings/integration";
+import type { CacheEntry } from "./cache.js";
 
 type BaseProps = Omit<HTMLAttributes<"svg">, "name"> & {
   "is:inline"?: boolean;
@@ -35,6 +34,9 @@ const props = Astro.props as Props;
 const {
   icon,
   name: nameProp,
+  size,
+  width,
+  height,
   title,
   desc,
   "is:inline": inline = false,
@@ -43,15 +45,6 @@ const {
 
 if (icon && nameProp != null && String(nameProp).length > 0) {
   throw new AstroIconError('Use either "name" or "icon", not both.');
-}
-
-if (import.meta.env.DEV && (rest as Record<string, unknown>).size != null) {
-  const r = rest as Record<string, unknown>;
-  if (r.width != null || r.height != null) {
-    console.warn(
-      '[astro-iconset] Use either "size" or "width"/"height", not both. "width"/"height" takes priority.'
-    );
-  }
 }
 
 if (
@@ -67,161 +60,38 @@ if (
   throw err;
 }
 
-function importedCacheKey(i: IconifyIcon): string {
-  return `import:${createHash("sha256").update(`${i.body ?? ""}:${i.width ?? ""}:${i.height ?? ""}`).digest("hex").slice(0, 24)}`;
-}
+const resolved = resolveIcon(
+  { name: nameProp as string | undefined, icon, size, width, height, title, desc },
+  "astro",
+);
 
-const cacheKey = icon ? importedCacheKey(icon) : String(nameProp);
-
+const cacheKey = icon ? resolved.symbolId.slice(5) : (nameProp as string);
 const req = Astro.request;
 const map = cache.get(req) ?? new Map();
-const i = map.get(cacheKey) ?? 0;
-map.set(cacheKey, i + 1);
+const entry = map.get(cacheKey) ?? ({ count: 0, body: "", viewBox: "" }) as CacheEntry;
+const isFirstUse = !inline && entry.count === 0;
+entry.count++;
+map.set(cacheKey, entry);
 cache.set(req, map);
 
-const includeSymbol = !inline && i === 0;
-
-let normalizedProps: Partial<IconifyIconBuildResult["attributes"]>;
-let normalizedBody: string;
-let viewBox: string | undefined;
-let id: string;
-
-const mod = (await import("virtual:astro-iconset")) as {
-  default: AstroIconCollectionMap;
-  config: {
-    include?: Record<string, ["*"] | string[]>;
-    dataAttr?: string | false;
-  };
-};
-
-const icons = mod.default;
-const config = mod.config;
-
-const dataAttrName =
-  config.dataAttr === false ? undefined : (config.dataAttr ?? "data-icon");
-
-if (icon) {
-  const renderData = iconToSVG(icon);
-  id = `ai:${importedCacheKey(icon)}`;
-  const attrs = rest as Record<string, unknown>;
-  if (attrs.size != null) {
-    if (attrs.width == null) attrs.width = attrs.size;
-    if (attrs.height == null) attrs.height = attrs.size;
-    delete attrs.size;
-  }
-  normalizedProps = {
-    ...(renderData.attributes as Partial<
-      IconifyIconBuildResult["attributes"]
-    >),
-    ...attrs,
-  };
-  normalizedBody = renderData.body;
-  viewBox = normalizedProps.viewBox as string | undefined;
-  if (includeSymbol) {
-    delete normalizedProps.viewBox;
-  }
-} else {
-  const name = nameProp as string;
-  const { include = {} } = config;
-  const sets = Object.keys(include);
-
-  let [setName, iconName] = name.split(":");
-
-  if (!setName && iconName) {
-    const err = new AstroIconError(`Invalid "name" provided!`);
-    if (import.meta.env.DEV) {
-      err.hint = `The provided value of "${name}" is invalid.\n\nDid you forget the icon set name? If you were attemping to reference a local icon, use the icon's name directly. (ie. "${iconName}")`;
-    }
-    throw err;
-  }
-
-  if (!iconName) {
-    iconName = setName;
-    setName = "local";
-
-    if (!icons[setName]) {
-      const err = new AstroIconError('Unable to load the "local" icon set!');
-      if (import.meta.env.DEV) {
-        err.hint =
-          'It looks like the "local" set was not loaded.\n\nDid you forget to create the icon directory or to update your config?';
-      }
-      throw err;
-    }
-
-    if (!(iconName in icons[setName].icons)) {
-      const err = new AstroIconError(`Unable to locate "${name}" icon!`);
-      if (import.meta.env.DEV) {
-        err.hint = `The icon named "${iconName}" was not found in your local icon directory.\n\nDid you forget to configure your icon directory or make a typo?`;
-      }
-      throw err;
-    }
-  }
-
-  const collection = icons[setName];
-
-  if (!collection) {
-    const err = new AstroIconError(`Unable to locate the "${setName}" icon set!`);
-    if (import.meta.env.DEV) {
-      if (sets.includes(setName)) {
-        err.hint = `It looks like the "${setName}" set was not loaded.\n\nDid you install the "@iconify-json/${setName}" dependency?`;
-      } else {
-        err.hint = `It looks like the "${setName}" set is not included in your configuration.\n\nDo you need to add the "${setName}" set?`;
-      }
-    }
-    throw err;
-  }
-
-  const iconData = getIconData(collection, iconName ?? setName);
-  if (!iconData) {
-    const err = new AstroIconError(`Unable to locate "${name}" icon!`);
-    if (import.meta.env.DEV) {
-      const [maybeStar] = include[setName] ?? [];
-      const listed = include[setName] as readonly string[] | undefined;
-      if (maybeStar === "*" || listed?.includes(iconName ?? "")) {
-        err.hint = `The "${setName}" set does not include an icon named "${iconName}".\n\nIs this a typo?`;
-      } else {
-        err.hint = `The "${setName}" set is not configured to include an icon named "${iconName}".\n\nDo you need to add it to your configuration?`;
-      }
-    }
-    throw err;
-  }
-
-  id = `ai:${collection.prefix}:${iconName ?? setName}`;
-
-  const attrs = rest as Record<string, unknown>;
-  if (attrs.size != null) {
-    if (attrs.width == null) attrs.width = attrs.size;
-    if (attrs.height == null) attrs.height = attrs.size;
-    delete attrs.size;
-  }
-
-  const renderData = iconToSVG(iconData);
-  normalizedProps = {
-    ...(renderData.attributes as Partial<
-      IconifyIconBuildResult["attributes"]
-    >),
-    ...attrs,
-  };
-  normalizedBody = renderData.body;
-  viewBox = normalizedProps.viewBox as string | undefined;
-  if (includeSymbol) {
-    delete normalizedProps.viewBox;
-  }
+if (isFirstUse) {
+  entry.body = resolved.symbolBody;
+  entry.viewBox = resolved.symbolViewBox;
 }
 
-const svgDataAttr = dataAttrName != null ? { [dataAttrName]: cacheKey } : {};
+const dataAttr = resolved.dataAttr ? { [resolved.dataAttr.name]: cacheKey } : {};
 ---
 
-<svg {...normalizedProps} {...svgDataAttr}>
+<svg {...resolved.attrs} {...rest} {...dataAttr}>
   {title && <title>{title}</title>}
   {desc && <desc>{desc}</desc>}
   {
     inline ? (
-      <Fragment id={id} set:html={normalizedBody} />
+      <Fragment set:html={resolved.symbolBody} />
     ) : (
       <Fragment>
-        {includeSymbol && <symbol id={id} viewBox={viewBox} set:html={normalizedBody} />}
-        <use href={`#${id}`} />
+        {isFirstUse && <symbol id={resolved.symbolId} viewBox={resolved.symbolViewBox} set:html={resolved.symbolBody} />}
+        <use href={`#${resolved.symbolId}`} />
       </Fragment>
     )
   }
